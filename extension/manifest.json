@@ -1,0 +1,27 @@
+{
+    "manifest_version": 3,
+    "name": "YouTube Note Maker",
+    "version": "1.0",
+    "description": "Generate AI notes for the current YouTube video.",
+    "permissions": [
+        "activeTab",
+        "scripting"
+    ],
+    "host_permissions": [
+        "https://www.youtube.com/*",
+        "http://localhost:3000/*"
+    ],
+    "content_scripts": [
+        {
+            "matches": [
+                "https://www.youtube.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "css": [
+                "styles.css"
+            ]
+        }
+    ]
+}
