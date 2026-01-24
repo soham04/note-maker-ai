@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# OS/IDE files
+.DS_Store
+.vscode/
+.idea/
+
+# Extension builds
+dist/
+build/
+*.pem
+
+# Env vars
+.env
