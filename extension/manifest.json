@@ -5,11 +5,12 @@
     "description": "Generate AI notes for the current YouTube video.",
     "permissions": [
         "activeTab",
-        "scripting"
+        "scripting",
+        "storage"
     ],
     "host_permissions": [
         "https://www.youtube.com/*",
-        "http://localhost:3000/*"
+        "http://localhost:8000/*"
     ],
     "content_scripts": [
         {
