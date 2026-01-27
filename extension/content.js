@@ -25,28 +25,15 @@ function getVideoId() {
 }
 
 // Auth State Logic
-async function getToken() {
-    return new Promise((resolve) => {
-        chrome.storage.local.get(['yt_notes_jwt'], (result) => {
-            resolve(result.yt_notes_jwt);
+async function checkAuth() {
+    try {
+        const response = await fetch('http://localhost:8000/auth/status', {
+            credentials: 'include'
         });
-    });
-}
-
-async function setToken(token) {
-    return new Promise((resolve) => {
-        chrome.storage.local.set({ yt_notes_jwt: token }, () => {
-            resolve();
-        });
-    });
-}
-
-async function clearToken() {
-    return new Promise((resolve) => {
-        chrome.storage.local.remove(['yt_notes_jwt'], () => {
-            resolve();
-        });
-    });
+        return response.ok;
+    } catch (e) {
+        return false;
+    }
 }
 
 // UI Creation
@@ -89,6 +76,7 @@ function updateButtonState(button, state) {
     }
 }
 
+
 async function handleGenerateNotes(button) {
     const videoId = getVideoId();
     if (!videoId) {
@@ -99,18 +87,13 @@ async function handleGenerateNotes(button) {
     updateButtonState(button, 'GENERATING');
 
     try {
-        const token = await getToken();
-        if (!token) {
-            updateButtonState(button, 'LOGIN');
-            return;
-        }
-
+        // 1. Start Generation
         const response = await fetch('http://localhost:8000/generate-notes', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
+                'Content-Type': 'application/json'
             },
+            credentials: 'include',
             body: JSON.stringify({
                 videoUrl: window.location.href,
                 videoId: videoId
@@ -118,50 +101,127 @@ async function handleGenerateNotes(button) {
         });
 
         if (response.status === 401) {
-            await clearToken();
             updateButtonState(button, 'LOGIN');
             throw new Error('Unauthorized');
         }
 
         if (!response.ok) throw new Error('Network response was not ok');
 
-        const data = await response.json();
+        // 2. Listen for Events via Fetch Stream (for credentials support)
+        await streamEvents(videoId, button);
 
-        if (data.driveUrl) {
-            button.classList.remove('loading');
-            button.classList.add('success');
-            button.textContent = 'Open in Drive';
-            button.disabled = false;
-
-            // Replace with link to avoid event listener issues
-            const link = document.createElement('a');
-            link.href = data.driveUrl;
-            link.className = 'yt-notes-button success';
-            link.textContent = 'Open in Drive';
-            link.target = '_blank';
-            button.replaceWith(link);
-        }
     } catch (error) {
         console.error('Error generating notes:', error);
+        handleError(error, button);
+    }
+}
 
-        if (error.message === 'Unauthorized') {
-            // Already handled state update above
-            alert('Session expired. Please login again.');
-        } else {
-            button.classList.add('error');
-            button.textContent = 'Error (Try Again)';
-            button.classList.remove('loading');
-            button.disabled = false;
+async function streamEvents(videoId, button) {
+    try {
+        const response = await fetch(`http://localhost:8000/notes/${videoId}/events`, {
+            credentials: 'include'
+        });
 
-            setTimeout(() => {
+        if (!response.ok) throw new Error('SSE Connection failed');
 
-                // Just reset to READY if we think we are logged in, or LOGIN if not.
-                // For simplicity, just reset to READY/LOGIN based on token presence
-                getToken().then(t => {
-                    updateButtonState(button, t ? 'READY' : 'LOGIN');
-                });
-            }, 8000);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        handleStatusUpdate(data.status, button, videoId);
+                        if (['ready', 'failed'].includes(data.status)) {
+                            return; // Stop stream
+                        }
+                    } catch (e) {
+                        // ignore parse errors or keepalive
+                    }
+                }
+            }
         }
+    } catch (error) {
+        throw error;
+    }
+}
+
+function handleStatusUpdate(status, button, videoId) {
+    if (status === 'ready') {
+        button.classList.remove('loading');
+        button.classList.add('success');
+        button.textContent = 'Download Note';
+        button.disabled = false;
+
+        // Convert to download link
+        const link = document.createElement('a');
+        link.href = '#';
+
+        link.onclick = (e) => {
+            e.preventDefault();
+            downloadNote(videoId);
+        };
+
+        link.className = 'yt-notes-button success';
+        link.textContent = 'Download Note';
+        button.replaceWith(link);
+    } else if (status === 'failed') {
+        button.classList.add('error');
+        button.textContent = 'Generation Failed';
+        button.classList.remove('loading');
+    }
+}
+
+async function downloadNote(videoId) {
+    try {
+        const response = await fetch(`http://localhost:8000/notes/${videoId}/download`, {
+            credentials: 'include'
+        });
+        if (!response.ok) throw new Error('Download failed');
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+
+        // content-disposition header might have filename
+        const contentDisposition = response.headers.get('Content-Disposition');
+        let filename = 'note.md';
+        if (contentDisposition && contentDisposition.includes('filename=')) {
+            filename = contentDisposition.split('filename=')[1].replace(/"/g, '');
+        }
+
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    } catch (e) {
+        alert('Failed to download note');
+    }
+}
+
+function handleError(error, button) {
+    if (error.message === 'Unauthorized') {
+        alert('Session expired. Please login again.');
+        updateButtonState(button, 'LOGIN');
+    } else {
+        button.classList.add('error');
+        button.textContent = 'Error (Try Again)';
+        button.classList.remove('loading');
+        button.disabled = false;
+        setTimeout(() => {
+            checkAuth().then(isAuth => {
+                updateButtonState(button, isAuth ? 'READY' : 'LOGIN');
+            });
+        }, 3000);
     }
 }
 let isInjecting = false;
@@ -186,8 +246,8 @@ async function injectButton() {
         // Also check if we already marked this container
         if (actionsContainer.dataset.notesButtonInjected === 'true') return;
 
-        const token = await getToken();
-        const initialState = token ? 'READY' : 'LOGIN';
+        const isAuth = await checkAuth();
+        const initialState = isAuth ? 'READY' : 'LOGIN';
         const button = createButton(initialState);
 
         actionsContainer.insertBefore(button, actionsContainer.firstChild);
@@ -202,13 +262,13 @@ async function injectButton() {
 window.addEventListener('message', async (event) => {
     // Basic security check - in prod we might want to check origin more strictly
     // but localhost callback is fine for now
-    if (event.data && event.data.type === 'AUTH_SUCCESS' && event.data.token) {
-        await setToken(event.data.token);
-
+    if (event.data && event.data.type === 'AUTH_SUCCESS') {
         // Update any existing buttons
         const button = document.querySelector('.yt-notes-button');
         if (button) {
             updateButtonState(button, 'READY');
+        } else {
+            // Or ensure state is reflected if re-injecting
         }
     }
 });
