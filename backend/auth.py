@@ -41,11 +41,11 @@ def decode_jwt_token(token: str):
     except JWTError:
         return None
 
-def get_current_user_token(request: Request):
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid token")
-    token = auth_header.split(" ")[1]
+
+def get_current_user(request: Request):
+    token = request.cookies.get("fastapi_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     payload = decode_jwt_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token")
@@ -105,32 +105,47 @@ async def auth_google_callback(code: str, state: Optional[str] = None):
         # Store refresh token (encrypted in real app)
         if credentials.refresh_token:
             user_refresh_tokens[google_id] = credentials.refresh_token
-        else:
-            # If no refresh token, we might already have one or user didn't grant offline access properly
-            # For this simplified flow, we warn or assume we have it if it's a re-login
-            pass
-
+        
         # Issue JWT
         token = create_jwt_token({"sub": google_id, "email": email})
         
-    # Redirect back to extension via postMessage
-        
-        html_content = f"""
+        # Return HTML with script to close window and notify opener
+        html_content = """
         <html>
             <body>
                 <h1>Login Successful</h1>
                 <p>You can close this window now.</p>
                 <script>
-                    // Send token to the opener (the extension on YouTube)
-                    if (window.opener) {{
-                        window.opener.postMessage({{ type: 'AUTH_SUCCESS', token: '{token}' }}, '*');
-                    }}
-                    // Also try to close
+                    if (window.opener) {
+                        window.opener.postMessage({ type: 'AUTH_SUCCESS' }, '*');
+                    }
                     setTimeout(() => window.close(), 1000);
                 </script>
             </body>
         </html>
         """
-        return HTMLResponse(content=html_content)
+        response = HTMLResponse(content=html_content)
+        
+        # Set Secure, HttpOnly, SameSite=None cookie for cross-site usage (extension context)
+        response.set_cookie(
+            key="fastapi_token",
+            value=token,
+            httponly=True,
+            secure=True,
+            samesite="None",
+            max_age=3600 * 24 * 7 # 7 days
+        )
+        return response
+
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/auth/status")
+async def auth_status(user: dict = Depends(get_current_user)):
+    return {"status": "authenticated", "user": user.get("email")}
+
+@router.post("/auth/logout")
+async def logout():
+    response = HTMLResponse(content="Logged out")
+    response.delete_cookie("fastapi_token")
+    return response
