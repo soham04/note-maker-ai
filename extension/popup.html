@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <title>YouTube Note Maker</title>
     <link rel="stylesheet" href="styles.css">
@@ -10,15 +11,18 @@
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background-color: #f9f9f9;
         }
+
         h2 {
             margin-top: 0;
             font-size: 18px;
             color: #333;
         }
+
         #status-container {
             margin-bottom: 15px;
             font-size: 14px;
         }
+
         .btn {
             display: block;
             width: 100%;
@@ -30,28 +34,37 @@
             cursor: pointer;
             transition: background 0.2s;
         }
+
         .btn-primary {
             background-color: #cc0000;
             color: white;
         }
+
         .btn-primary:hover {
             background-color: #aa0000;
         }
+
         .btn-secondary {
             background-color: #e0e0e0;
             color: #333;
         }
+
         .btn-secondary:hover {
             background-color: #d0d0d0;
         }
+
         .hidden {
             display: none;
         }
     </style>
 </head>
+
 <body>
-    <h2>Note Maker AI</h2>
-    
+    <div style="display: flex; align-items: center; margin-bottom: 20px;">
+        <img src="icon.png" alt="Logo" style="width: 32px; height: 32px; margin-right: 10px;">
+        <h2 style="margin: 0;">Note Maker AI</h2>
+    </div>
+
     <div id="status-container">Checking status...</div>
 
     <div id="unauth-view" class="hidden">
@@ -65,4 +78,5 @@
 
     <script src="popup.js"></script>
 </body>
+
 </html>

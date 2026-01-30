@@ -8,3 +8,6 @@ python-dotenv
 requests
 pydantic
 google-cloud-storage
+psycopg2-binary
+sqlalchemy
+cloud-sql-python-connector[pg8000]

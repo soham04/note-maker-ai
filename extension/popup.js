@@ -31,6 +31,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             statusContainer.textContent = `Logged in as ${user.user}`;
             unauthView.classList.add('hidden');
             authView.classList.remove('hidden');
+            logoutBtn.textContent = `Logout (${user.user})`;
         } else {
             statusContainer.textContent = 'Not logged in';
             unauthView.classList.remove('hidden');

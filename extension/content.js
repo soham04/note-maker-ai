@@ -30,16 +30,22 @@ async function checkAuth() {
         const response = await fetch('http://localhost:8000/auth/status', {
             credentials: 'include'
         });
-        return response.ok;
+        if (response.ok) {
+            return await response.json();
+        }
+        return null;
     } catch (e) {
-        return false;
+        return null;
     }
 }
 
 // UI Creation
-function createButton(initialState = 'LOGIN') {
+function createButton(initialState = 'LOGIN', userEmail = null) {
     const button = document.createElement('button');
     button.className = 'yt-notes-button';
+    if (userEmail) {
+        button.dataset.userEmail = userEmail;
+    }
 
     updateButtonState(button, initialState);
 
@@ -68,7 +74,8 @@ function updateButtonState(button, state) {
     if (state === 'LOGIN') {
         button.textContent = 'Login to Notes AI';
     } else if (state === 'READY') {
-        button.textContent = 'Make Notes';
+        const email = button.dataset.userEmail;
+        button.textContent = email ? `Make Notes (${email})` : 'Make Notes';
     } else if (state === 'GENERATING') {
         button.textContent = 'Generating...';
         button.disabled = true;
@@ -246,9 +253,10 @@ async function injectButton() {
         // Also check if we already marked this container
         if (actionsContainer.dataset.notesButtonInjected === 'true') return;
 
-        const isAuth = await checkAuth();
+        const authData = await checkAuth();
+        const isAuth = !!authData;
         const initialState = isAuth ? 'READY' : 'LOGIN';
-        const button = createButton(initialState);
+        const button = createButton(initialState, authData?.user);
 
         actionsContainer.insertBefore(button, actionsContainer.firstChild);
         actionsContainer.dataset.notesButtonInjected = 'true';

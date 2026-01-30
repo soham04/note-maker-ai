@@ -1,18 +1,29 @@
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
+from sqlalchemy.orm import Session
 import asyncio
 import json
 import logging
 import datetime
 
 from .auth import router as auth_router, get_current_user
-from .models import GenerateNotesRequest, GenerateNotesResponse, NoteStatus
+from .models import GenerateNotesRequest, GenerateNotesResponse
+from .db_models import NoteStatus
 from .services.gemini import generate_notes
-from .services.gcs import upload_note, get_note_content, save_note_metadata, get_note_metadata
+from .services.gcs import upload_note, get_note_content
+from .services import db as db_service
+from .database import engine, Base, get_db
 import requests
 
+# Create Tables
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 @app.middleware("http")
 async def log_origin(request: Request, call_next):
@@ -32,10 +43,6 @@ app.add_middleware(
 
 app.include_router(auth_router)
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 def get_video_title(video_url: str) -> str:
     try:
         if "youtube.com" in video_url or "youtu.be" in video_url:
@@ -48,31 +55,21 @@ def get_video_title(video_url: str) -> str:
         logger.error(f"Error fetching video title: {e}")
     return "YouTube Note"
 
-def background_generate_note(user_id: str, video_id: str, video_url: str):
+def background_generate_note(db: Session, note_id: int, user_id: str, video_id: str, video_url: str):
     """
     Background task to generate note and upload to GCS.
-    Updates GCS metadata status through the process.
+    Updates DB status through the process.
     """
     try:
-        # Fetch current metadata to preserve fields
-        metadata = get_note_metadata(user_id, video_id)
-        if not metadata:
-             logger.error(f"Metadata not found for starting background task {user_id} {video_id}")
-             return
-
         # Update status to generating
-        metadata["status"] = NoteStatus.GENERATING
-        metadata["updated_at"] = datetime.datetime.utcnow().isoformat()
-        save_note_metadata(user_id, video_id, metadata)
+        db_service.update_note_status(db, note_id, NoteStatus.GENERATING)
 
         # 1. Generate Content
         try:
             content = generate_notes(video_url)
         except Exception as e:
             logger.error(f"Gemini generation failed: {e}")
-            metadata["status"] = NoteStatus.FAILED
-            metadata["updated_at"] = datetime.datetime.utcnow().isoformat()
-            save_note_metadata(user_id, video_id, metadata)
+            db_service.update_note_status(db, note_id, NoteStatus.FAILED)
             return
 
         # 2. Upload to GCS
@@ -80,43 +77,51 @@ def background_generate_note(user_id: str, video_id: str, video_url: str):
             gcs_key = upload_note(user_id, video_id, content)
         except Exception as e:
             logger.error(f"GCS upload failed: {e}")
-            metadata["status"] = NoteStatus.FAILED
-            metadata["updated_at"] = datetime.datetime.utcnow().isoformat()
-            save_note_metadata(user_id, video_id, metadata)
+            db_service.update_note_status(db, note_id, NoteStatus.FAILED)
             return
 
         # 3. Update Status to Ready
-        metadata["gcs_object_key"] = gcs_key
-        metadata["status"] = NoteStatus.READY
-        metadata["updated_at"] = datetime.datetime.utcnow().isoformat()
+        db_service.update_note_status(db, note_id, NoteStatus.READY, gcs_key)
         
-        save_note_metadata(user_id, video_id, metadata)
         logger.info(f"Note generated successfully for user {user_id} video {video_id}")
 
     except Exception as e:
         logger.exception(f"Unexpected error in background task: {e}")
-        # Try to set status to failed if possible
         try:
-             metadata = get_note_metadata(user_id, video_id) or {}
-             metadata["status"] = NoteStatus.FAILED
-             metadata["updated_at"] = datetime.datetime.utcnow().isoformat()
-             save_note_metadata(user_id, video_id, metadata)
+             db_service.update_note_status(db, note_id, NoteStatus.FAILED)
         except:
             pass
+    finally:
+        db.close() # Important for background tasks in a separate thread context if manually managed, 
+                   # but here we used a fresh session typically or need to be careful. 
+                   # Simplest is to pass a new session generator or handle it.
+                   # Actually, Dependency injection sessions are closed after request.
+                   # For background tasks, we need a fresh session.
+        pass
+
+# Wrapper for background task to manage session
+def run_background_generate_task(note_id: int, user_id: str, video_id: str, video_url: str):
+    db = next(get_db())
+    try:
+        background_generate_note(db, note_id, user_id, video_id, video_url)
+    finally:
+        db.close()
 
 @app.post("/generate-notes", response_model=GenerateNotesResponse)
 async def generate_notes_endpoint(
     request: GenerateNotesRequest,
     background_tasks: BackgroundTasks,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     user_id = user.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="User not authenticated")
+    email = user.get("email")
+    
+    # Ensure user exists in DB (syncing local DB with Auth info)
+    db_user = db_service.get_or_create_user(db, user_id, email)
 
     video_id = request.videoId
     if not video_id:
-        # Fallback extraction (very basic)
         if "v=" in request.videoUrl:
             video_id = request.videoUrl.split("v=")[1].split("&")[0]
         else:
@@ -124,20 +129,10 @@ async def generate_notes_endpoint(
 
     video_title = get_video_title(request.videoUrl)
 
-    # Init Metadata
-    metadata = {
-        "user_id": user_id,
-        "video_id": video_id,
-        "video_title": video_title,
-        "status": NoteStatus.PENDING,
-        "created_at": datetime.datetime.utcnow().isoformat(),
-        "updated_at": datetime.datetime.utcnow().isoformat()
-    }
+    # Create Initial Note Record
+    note = db_service.create_note(db, db_user.id, video_id, video_title)
     
-    # Save Initial Metadata (Overwrites existing if any - intentional regeneration)
-    save_note_metadata(user_id, video_id, metadata)
-    
-    background_tasks.add_task(background_generate_note, user_id, video_id, request.videoUrl)
+    background_tasks.add_task(run_background_generate_task, note.id, str(db_user.id), video_id, request.videoUrl)
 
     return GenerateNotesResponse(
         message="Note generation started",
@@ -156,21 +151,30 @@ async def note_events(
     user_id = user.get("sub")
     
     async def event_generator():
+        # Create a new DB session for polling since this is a long running generator 
+        # and we don't want to hold the request session or share it improperly
         while True:
             if await request.is_disconnected():
                 break
 
-            # Poll GCS Metadata
-            # Note: Polling GCS frequently can involve costs/latency. 
-            # 2 seconds interval is reasonable.
-            metadata = get_note_metadata(user_id, video_id)
-            status = metadata.get("status") if metadata else "unknown"
-            
-            data = json.dumps({"status": status})
-            yield f"data: {data}\n\n"
+            # Poll DB
+            db = next(get_db())
+            try:
+                db_user = db_service.get_user_by_google_id(db, user_id)
+                if not db_user:
+                     yield f"data: {json.dumps({'status': 'error'})}\n\n"
+                     break
+                     
+                note = db_service.get_note(db, db_user.id, video_id)
+                status = note.status if note else "unknown"
+                
+                data = json.dumps({"status": status})
+                yield f"data: {data}\n\n"
 
-            if status in [NoteStatus.READY, NoteStatus.FAILED]:
-                break
+                if status in [NoteStatus.READY, NoteStatus.FAILED]:
+                    break
+            finally:
+                db.close()
             
             await asyncio.sleep(2) 
 
@@ -179,20 +183,24 @@ async def note_events(
 @app.get("/notes/{video_id}/download")
 async def download_note(
     video_id: str,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     user_id = user.get("sub")
     
-    metadata = get_note_metadata(user_id, video_id)
+    db_user = db_service.get_user_by_google_id(db, user_id)
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    note = db_service.get_note(db, db_user.id, video_id)
     
-    if not metadata or metadata.get("status") != NoteStatus.READY:
+    if not note or note.status != NoteStatus.READY:
         raise HTTPException(status_code=404, detail="Note not ready or not found")
     
-    # Use key from metadata or construct it standard way
-    gcs_key = metadata.get("gcs_object_key") # or construct default
+    gcs_key = note.gcs_object_key
     if not gcs_key:
-         # Fallback
-         gcs_key = f"notes/user_{user_id}/{video_id}.md"
+         # Fallback logic should ideally not happen if status is READY
+         gcs_key = f"notes/user_{db_user.id}/{video_id}.md"
 
     try:
         content = get_note_content(gcs_key)
@@ -200,9 +208,13 @@ async def download_note(
         logger.error(f"Error fetching from GCS: {e}")
         raise HTTPException(status_code=500, detail="Error fetching note content")
 
-    filename = f"{metadata.get('video_title', 'Note')}.md".replace("/", "-")
+    filename = f"{note.video_title or 'Note'}.md".replace("/", "-")
     return Response(
         content=content,
         media_type="text/markdown",
         headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
     )
+
+@app.on_event("shutdown")
+def shutdown():
+    connector.close()

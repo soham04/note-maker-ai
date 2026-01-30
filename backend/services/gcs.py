@@ -1,7 +1,6 @@
 from google.cloud import storage
 import os
 from dotenv import load_dotenv
-
 import json
 
 load_dotenv()
@@ -20,9 +19,6 @@ def get_bucket():
     if not storage_client:
         raise Exception("GCS Client not initialized")
     return storage_client.bucket(GCS_BUCKET_NAME)
-
-def get_metadata_blob_name(user_id: str, video_id: str) -> str:
-    return f"notes/user_{user_id}/{video_id}.json"
 
 def get_content_blob_name(user_id: str, video_id: str) -> str:
     return f"notes/user_{user_id}/{video_id}.md"
@@ -47,31 +43,3 @@ def get_note_content(blob_name: str) -> str:
     bucket = get_bucket()
     blob = bucket.blob(blob_name)
     return blob.download_as_text()
-
-def save_note_metadata(user_id: str, video_id: str, metadata: dict):
-    """
-    Saves note metadata as JSON to GCS.
-    """
-    bucket = get_bucket()
-    blob_name = get_metadata_blob_name(user_id, video_id)
-    blob = bucket.blob(blob_name)
-    
-    blob.upload_from_string(json.dumps(metadata), content_type="application/json")
-
-def get_note_metadata(user_id: str, video_id: str) -> dict:
-    """
-    Retrieves note metadata from GCS. Returns None if not found.
-    """
-    bucket = get_bucket()
-    blob_name = get_metadata_blob_name(user_id, video_id)
-    blob = bucket.blob(blob_name)
-    
-    if not blob.exists():
-        return None
-        
-    try:
-        content = blob.download_as_text()
-        return json.loads(content)
-    except Exception as e:
-        print(f"Error reading metadata: {e}")
-        return None
