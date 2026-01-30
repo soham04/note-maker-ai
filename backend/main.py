@@ -7,13 +7,13 @@ import json
 import logging
 import datetime
 
-from .auth import router as auth_router, get_current_user
-from .models import GenerateNotesRequest, GenerateNotesResponse
-from .db_models import NoteStatus
-from .services.gemini import generate_notes
-from .services.gcs import upload_note, get_note_content
-from .services import db as db_service
-from .database import engine, Base, get_db
+from backend.auth import router as auth_router, get_current_user
+from backend.models import GenerateNotesRequest, GenerateNotesResponse
+from backend.db_models import NoteStatus
+from backend.services.gemini import generate_notes
+from backend.services.gcs import upload_note, get_note_content
+from backend.services import db as db_service
+from backend.database import engine, Base, get_db
 import requests
 
 # Create Tables

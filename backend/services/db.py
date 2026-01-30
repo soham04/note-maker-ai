@@ -1,6 +1,5 @@
 from sqlalchemy.orm import Session
-from .. import db_models
-from ..db_models import NoteStatus
+from backend.db_models import NoteStatus
 import datetime
 
 def get_user_by_google_id(db: Session, google_id: str):
